@@ -2,7 +2,7 @@
 
 Configuration automatique d’un terminal Windows stylé : **Windows Terminal** (thème Catppuccin Mocha, transparence, Nerd Font) + **Fastfetch** au démarrage de PowerShell.
 
-Inspiré du tutoriel de [SleepyCatHey](https://www.youtube.com/) — ce dépôt regroupe tout en un seul script cliquable.
+Inspiré du tutoriel de [SleepyCatHey]([https://www.youtube.com/](https://www.youtube.com/watch?v=z3NpVq-y6jU)) — ce dépôt regroupe tout en un seul script cliquable.
 
 ## Aperçu
 
