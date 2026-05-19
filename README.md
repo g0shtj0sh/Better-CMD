@@ -2,7 +2,7 @@
 
 Automatic setup for a styled Windows terminal: **Windows Terminal** (Catppuccin Mocha theme, transparency, Nerd Font) + **Fastfetch** on PowerShell startup.
 
-Inspired by [SleepyCatHey](https://www.youtube.com/)'s tutorial — this repo bundles everything into a single clickable script.
+Inspired by [SleepyCatHey](https://www.youtube.com/watch?v=z3NpVq-y6jU)'s tutorial — this repo bundles everything into a single clickable script.
 
 ## Preview
 
