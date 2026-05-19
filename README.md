@@ -1,98 +1,98 @@
 # Better CMD
 
-Configuration automatique d’un terminal Windows stylé : **Windows Terminal** (thème Catppuccin Mocha, transparence, Nerd Font) + **Fastfetch** au démarrage de PowerShell.
+Automatic setup for a styled Windows terminal: **Windows Terminal** (Catppuccin Mocha theme, transparency, Nerd Font) + **Fastfetch** on PowerShell startup.
 
-Inspiré du tutoriel de [SleepyCatHey]([https://www.youtube.com/](https://www.youtube.com/watch?v=z3NpVq-y6jU)) — ce dépôt regroupe tout en un seul script cliquable.
+Inspired by [SleepyCatHey](https://www.youtube.com/)'s tutorial — this repo bundles everything into a single clickable script.
 
-## Aperçu
+## Preview
 
-![Aperçu du terminal configuré par Better CMD](./preview.png)
+![Preview of the terminal configured by Better CMD](./preview.png)
 
-## Ce que fait le script
+## What the script does
 
-En lançant `Better-CMD.bat`, le script :
+When you run `Better-CMD.bat`, the script:
 
-| Étape | Action |
+| Step | Action |
 |--------|--------|
-| **winget** | Vérifie la présence de `winget` ; l’installe via App Installer si besoin |
-| **Fastfetch** | Installe [Fastfetch](https://github.com/fastfetch-cli/fastfetch) et copie la config (`fastfetch/`) vers `%USERPROFILE%\.config\fastfetch` |
-| **Polices** | Installe **tous** les fichiers `.ttf` / `.otf` du dossier `fonts/` pour l’utilisateur courant (copie + registre + rafraîchissement du cache) |
-| **Windows Terminal** | Déploie `LocalState/settings.json` (profils, couleurs, police JetBrainsMono Nerd Font Mono, acrylic, etc.) |
-| **PowerShell** | Ajoute `fastfetch` au profil utilisateur pour l’afficher à chaque ouverture |
-| **Relance** | Redémarre Windows Terminal pour appliquer les changements |
+| **winget** | Checks for `winget`; installs it via App Installer if needed |
+| **Fastfetch** | Installs [Fastfetch](https://github.com/fastfetch-cli/fastfetch) and copies the config (`fastfetch/`) to `%USERPROFILE%\.config\fastfetch` |
+| **Fonts** | Installs **all** `.ttf` / `.otf` files from the `fonts/` folder for the current user (copy + registry + cache refresh) |
+| **Windows Terminal** | Deploys `LocalState/settings.json` (profiles, colors, JetBrainsMono Nerd Font Mono, acrylic, etc.) |
+| **PowerShell** | Adds `fastfetch` to the user profile so it runs on every launch |
+| **Restart** | Restarts Windows Terminal to apply the changes |
 
-Les sauvegardes de l’ancien `settings.json` sont stockées dans :
+Backups of the previous `settings.json` are stored in:
 
 `%USERPROFILE%\.better-cmd-backups\`
 
-## Prérequis
+## Requirements
 
 - **Windows 10/11**
 - **[Windows Terminal](https://aka.ms/terminal)** (Microsoft Store)
-- Connexion Internet recommandée (installation de winget / Fastfetch)
-- Droits **administrateur** au premier lancement (via l’élévation UAC de `Better-CMD.bat`)
+- Internet connection recommended (winget / Fastfetch installation)
+- **Administrator** rights on first run (via UAC elevation from `Better-CMD.bat`)
 
 ## Installation
 
-1. Clone ou télécharge ce dépôt.
-2. Vérifie que le dossier `fonts/` contient tes polices (JetBrains Mono Nerd Font, etc.).
-3. Double-clique sur **`Better-CMD.bat`** et accepte l’élévation UAC.
-4. Attends la fin du script — Windows Terminal se rouvre avec la nouvelle config.
+1. Clone or download this repository.
+2. Make sure the `fonts/` folder contains your fonts (JetBrains Mono Nerd Font, etc.).
+3. Double-click **`Better-CMD.bat`** and accept the UAC elevation prompt.
+4. Wait for the script to finish — Windows Terminal will reopen with the new config.
 
-### Ligne de commande
+### Command line
 
 ```powershell
-# Installation
+# Install
 .\Better-CMD.ps1
 
-# Désinstallation (restaure settings.json + retire fastfetch du profil)
+# Uninstall (restores settings.json + removes fastfetch from profile)
 .\Better-CMD.ps1 -Uninstall
 ```
 
-Ou utilise **`Better-CMD-Uninstall.bat`** pour la restauration sans passer par PowerShell manuellement.
+Or use **`Better-CMD-Uninstall.bat`** for restoration without manually running PowerShell.
 
-> **Note :** la désinstallation ne supprime pas les polices ni Fastfetch du système — seulement la config Windows Terminal (depuis la sauvegarde) et l’entrée `fastfetch` dans le profil PowerShell.
+> **Note:** Uninstall does not remove fonts or Fastfetch from the system — it only restores the Windows Terminal config (from backup) and removes the `fastfetch` entry from the PowerShell profile.
 
-## Structure du projet
+## Project structure
 
 ```
 Better-CMD/
-├── Better-CMD.bat              # Lanceur (admin) — à utiliser en priorité
-├── Better-CMD.ps1              # Script principal
-├── Better-CMD-Uninstall.bat    # Restauration rapide
-├── preview.png                 # Capture d’écran pour ce README
-├── fonts/                      # Polices .ttf / .otf installées automatiquement
+├── Better-CMD.bat              # Launcher (admin) — use this first
+├── Better-CMD.ps1              # Main script
+├── Better-CMD-Uninstall.bat    # Quick restore
+├── preview.png                 # Screenshot for this README
+├── fonts/                      # .ttf / .otf fonts installed automatically
 ├── fastfetch/
-│   ├── config.jsonc            # Config Fastfetch (thème Catppuccin)
-│   └── ascii.txt               # Logo ASCII affiché à gauche
+│   ├── config.jsonc            # Fastfetch config (Catppuccin theme)
+│   └── ascii.txt               # ASCII logo displayed on the left
 └── LocalState/
-    └── settings.json           # Profils et apparence Windows Terminal
+    └── settings.json           # Windows Terminal profiles and appearance
 ```
 
-## Personnalisation
+## Customization
 
-- **Terminal** : modifie `LocalState/settings.json`, puis relance `Better-CMD.bat`.
-- **Fastfetch** : édite `fastfetch/config.jsonc` ou remplace `fastfetch/ascii.txt`.
-- **Polices** : ajoute ou retire des fichiers dans `fonts/`, puis relance le script — seules les nouvelles polices seront copiées.
+- **Terminal**: Edit `LocalState/settings.json`, then run `Better-CMD.bat` again.
+- **Fastfetch**: Edit `fastfetch/config.jsonc` or replace `fastfetch/ascii.txt`.
+- **Fonts**: Add or remove files in `fonts/`, then rerun the script — only new fonts will be copied.
 
-Police par défaut dans Windows Terminal : **JetBrainsMono Nerd Font Mono**.
+Default font in Windows Terminal: **JetBrainsMono Nerd Font Mono**.
 
-## Dépannage
+## Troubleshooting
 
-| Problème | Piste |
+| Issue | Suggestion |
 |----------|--------|
-| `winget` introuvable | Relance `Better-CMD.bat` après installation d’App Installer, ou installe [App Installer](https://apps.microsoft.com/detail/9nblggh4nns1) |
-| Icônes cassées dans Fastfetch | Vérifie que les polices Nerd Font sont bien dans `fonts/` et que le script les a installées |
-| Police absente dans le menu WT | Ferme complètement Windows Terminal, relance le script, ou redémarre la session |
-| Restaurer l’ancien terminal | `Better-CMD-Uninstall.bat` |
+| `winget` not found | Rerun `Better-CMD.bat` after installing App Installer, or install [App Installer](https://apps.microsoft.com/detail/9nblggh4nns1) |
+| Broken icons in Fastfetch | Make sure Nerd Fonts are in `fonts/` and that the script installed them |
+| Font missing in WT menu | Fully close Windows Terminal, rerun the script, or restart your session |
+| Restore previous terminal | `Better-CMD-Uninstall.bat` |
 
-## Crédits
+## Credits
 
-- Tutoriel d’origine : **SleepyCatHey**
+- Original tutorial: **SleepyCatHey**
 - [Fastfetch](https://github.com/fastfetch-cli/fastfetch)
 - [JetBrains Mono Nerd Font](https://github.com/ryanoasis/nerd-fonts)
-- Thème **Catppuccin Mocha**
+- **Catppuccin Mocha** theme
 
-## Licence
+## License
 
-Projet fourni tel quel, sans garantie. Les polices et outils tiers restent soumis à leurs licences respectives.
+Project provided as-is, without warranty. Third-party fonts and tools remain subject to their respective licenses.
