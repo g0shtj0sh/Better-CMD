@@ -37,6 +37,42 @@ if (-not $ProjectRoot) {
 
 $BackupRoot = Join-Path $env:USERPROFILE '.better-cmd-backups'
 $FastfetchMarker = '# Auto-start Fastfetch (Better CMD)'
+$BetterCmdProfileMarker = '# Better CMD — profil PowerShell'
+$PowerShellProfileRelativeDir = 'WindowsPowerShell'
+
+function Get-BetterCmdDocumentsPowerShellProfilePath {
+    $documents = [Environment]::GetFolderPath('MyDocuments')
+    return Join-Path (Join-Path $documents $PowerShellProfileRelativeDir) 'profile.ps1'
+}
+
+function Deploy-BetterCmdPowerShellProfile {
+    param(
+        [string]$ProjectRootPath,
+        [string]$BackupRootPath
+    )
+
+    $sourceProfile = Join-Path (Join-Path $ProjectRootPath $PowerShellProfileRelativeDir) 'profile.ps1'
+    if (-not (Test-Path -LiteralPath $sourceProfile)) {
+        Write-Warn "Fichier WindowsPowerShell\profile.ps1 introuvable dans le projet. Étape ignorée."
+        return
+    }
+
+    $targetProfile = Get-BetterCmdDocumentsPowerShellProfilePath
+    $targetDir = Split-Path -Parent $targetProfile
+
+    if (-not (Test-Path -LiteralPath $targetDir)) {
+        New-Item -Path $targetDir -ItemType Directory -Force | Out-Null
+    }
+
+    $firstTimeBackup = Join-Path $BackupRootPath 'PowerShell-profile-before-better-cmd.ps1'
+    if (-not (Test-Path -LiteralPath $firstTimeBackup) -and (Test-Path -LiteralPath $targetProfile)) {
+        Copy-Item -LiteralPath $targetProfile -Destination $firstTimeBackup -Force
+        Write-Ok "Ancien profil PowerShell sauvegardé ($firstTimeBackup)."
+    }
+
+    Copy-Item -LiteralPath $sourceProfile -Destination $targetProfile -Force
+    Write-Ok "Profil PowerShell déployé : $targetProfile"
+}
 
 function Write-Step {
     param([string]$Message, [string]$Color = 'Cyan')
@@ -428,22 +464,53 @@ function Restore-WindowsTerminal {
 }
 
 function Remove-FastfetchFromProfile {
-    $profilePath = $PROFILE.CurrentUserAllHosts
-    if (-not (Test-Path $profilePath)) {
-        Write-Ok "Aucun profil PowerShell à modifier."
+    param([string]$ProfilePath)
+
+    if (-not (Test-Path -LiteralPath $ProfilePath)) {
         return
     }
 
-    $content = Get-Content -Path $profilePath -Raw -Encoding UTF8
+    $content = Get-Content -Path $ProfilePath -Raw -Encoding UTF8
     if ($content -notmatch [regex]::Escape($FastfetchMarker)) {
-        Write-Ok "Fastfetch absent du profil PowerShell."
         return
     }
 
     $newContent = $content -replace "(?ms)\r?\n$([regex]::Escape($FastfetchMarker))\r?\nfastfetch\r?\n?", "`n"
     $newContent = $newContent.TrimEnd() + "`n"
-    Write-Utf8NoBom -Path $profilePath -Content $newContent
-    Write-Ok "Fastfetch retiré du profil PowerShell."
+    Write-Utf8NoBom -Path $ProfilePath -Content $newContent
+    Write-Ok "Fastfetch retiré du profil : $ProfilePath"
+}
+
+function Restore-BetterCmdPowerShellProfile {
+    param([string]$BackupRootPath)
+
+    $docsProfile = Get-BetterCmdDocumentsPowerShellProfilePath
+    $firstTimeBackup = Join-Path $BackupRootPath 'PowerShell-profile-before-better-cmd.ps1'
+
+    if (Test-Path -LiteralPath $firstTimeBackup) {
+        $targetDir = Split-Path -Parent $docsProfile
+        if (-not (Test-Path -LiteralPath $targetDir)) {
+            New-Item -Path $targetDir -ItemType Directory -Force | Out-Null
+        }
+        Copy-Item -LiteralPath $firstTimeBackup -Destination $docsProfile -Force
+        Write-Ok "Profil PowerShell restauré depuis la sauvegarde Better CMD."
+        return
+    }
+
+    if (Test-Path -LiteralPath $docsProfile) {
+        $raw = Get-Content -Path $docsProfile -Raw -Encoding UTF8 -ErrorAction SilentlyContinue
+        if ($raw -and $raw.Contains($BetterCmdProfileMarker)) {
+            Remove-Item -LiteralPath $docsProfile -Force
+            Write-Ok "Profil Better CMD supprimé ($docsProfile) — aucune sauvegarde préalable."
+            return
+        }
+    }
+
+    Remove-FastfetchFromProfile -ProfilePath $docsProfile
+    $legacyAllHosts = $PROFILE.CurrentUserAllHosts
+    if ($legacyAllHosts -and ($legacyAllHosts -ne $docsProfile)) {
+        Remove-FastfetchFromProfile -ProfilePath $legacyAllHosts
+    }
 }
 
 function Restart-WindowsTerminalApp {
@@ -516,23 +583,8 @@ function Invoke-BetterCmdInstall {
     Write-Step "Déploiement de Windows Terminal (LocalState)..."
     Deploy-WindowsTerminal -SourceDir $localStateSource -DestDir $wtLocalState -BackupRootPath $BackupRoot
 
-    Write-Step "Configuration du profil PowerShell..."
-    $profilePath = $PROFILE.CurrentUserAllHosts
-    $profileDir = Split-Path $profilePath -Parent
-    if (-not (Test-Path $profileDir)) {
-        New-Item -Path $profileDir -ItemType Directory -Force | Out-Null
-    }
-    if (-not (Test-Path $profilePath)) {
-        New-Item -Path $profilePath -ItemType File -Force | Out-Null
-    }
-
-    $profileContent = Get-Content -Path $profilePath -Raw -ErrorAction SilentlyContinue
-    if ($profileContent -notmatch '\bfastfetch\b') {
-        Add-Content -Path $profilePath -Value "`n$FastfetchMarker`nfastfetch" -Encoding UTF8
-        Write-Ok "Fastfetch ajouté au profil PowerShell."
-    } else {
-        Write-Ok "Fastfetch déjà présent dans le profil PowerShell."
-    }
+    Write-Step "Configuration du profil PowerShell (Documents\\WindowsPowerShell)..."
+    Deploy-BetterCmdPowerShellProfile -ProjectRootPath $ProjectRoot -BackupRootPath $BackupRoot
 
     Write-Step "Relance de Windows Terminal..."
     Restart-WindowsTerminalApp | Out-Null
@@ -551,7 +603,7 @@ function Invoke-BetterCmdUninstall {
     $restored = Restore-WindowsTerminal -DestDir $wtLocalState -BackupRootPath $BackupRoot
 
     Write-Step "Nettoyage du profil PowerShell..."
-    Remove-FastfetchFromProfile
+    Restore-BetterCmdPowerShellProfile -BackupRootPath $BackupRoot
 
     Write-Step "Relance de Windows Terminal..."
     Restart-WindowsTerminalApp | Out-Null
