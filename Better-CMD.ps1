@@ -242,29 +242,22 @@ function Get-FontRegistrySuffix {
 }
 
 function Notify-WindowsFontChange {
-    param([string[]]$FontPaths = @())
-
     if (-not ('BetterCmdNativeFonts' -as [type])) {
         Add-Type -TypeDefinition @'
 using System;
 using System.Runtime.InteropServices;
 public static class BetterCmdNativeFonts {
-    [DllImport("gdi32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
-    public static extern int AddFontResourceW(string lpFileName);
     [DllImport("user32.dll", CharSet = CharSet.Auto)]
-    public static extern IntPtr SendMessage(IntPtr hWnd, uint Msg, IntPtr wParam, IntPtr lParam);
+    public static extern bool PostMessage(IntPtr hWnd, uint Msg, IntPtr wParam, IntPtr lParam);
 }
 '@ -ErrorAction SilentlyContinue
     }
 
     if ('BetterCmdNativeFonts' -as [type]) {
-        foreach ($path in $FontPaths) {
-            if ($path -and (Test-Path -LiteralPath $path)) {
-                [BetterCmdNativeFonts]::AddFontResourceW($path) | Out-Null
-            }
-        }
-        # WM_FONTCHANGE — rafraîchit la liste des polices pour les applications ouvertes
-        [BetterCmdNativeFonts]::SendMessage([IntPtr]0xffff, 0x001D, [IntPtr]::Zero, [IntPtr]::Zero) | Out-Null
+        # WM_FONTCHANGE — une seule notification, en PostMessage (asynchrone).
+        # SendMessage(HWND_BROADCAST, …) attend chaque fenêtre : très lent après ~100 polices.
+        # Les fichiers sont déjà dans le dossier utilisateur + registre ; pas besoin d’AddFontResourceW × N.
+        [void][BetterCmdNativeFonts]::PostMessage([IntPtr]0xffff, 0x001D, [IntPtr]::Zero, [IntPtr]::Zero)
     }
 }
 
@@ -344,7 +337,8 @@ function Install-UserFonts {
     }
 
     if ($newlyLoaded.Count -gt 0) {
-        Notify-WindowsFontChange -FontPaths $newlyLoaded.ToArray()
+        Write-Host "    ... rafraîchissement des polices (rapide)" -ForegroundColor DarkGray
+        Notify-WindowsFontChange
     }
 
     if ($installed -gt 0 -or $updated -gt 0) {
