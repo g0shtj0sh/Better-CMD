@@ -3,18 +3,32 @@
     Automatisation du ricing de Windows Terminal (basé sur la vidéo de SleepyCatHey).
 
     .PARAMETER Uninstall
-    Restaure settings.json depuis la dernière sauvegarde et retire fastfetch du profil PowerShell.
+    Désinstalle Better CMD : restaure Windows Terminal (sauvegarde « avant première install », sinon réinitialisation par défaut), profil PowerShell, fichiers .better-cmd, config fastfetch déployée par le script, et le paquet fastfetch (winget).
+
+    .PARAMETER Force
+    Réapplique tous les fichiers du dépôt même si le suivi indique qu’ils sont déjà à jour.
+
+    .PARAMETER Purge
+    Avec -Uninstall : supprime aussi le dossier %USERPROFILE%\.better-cmd-backups (y compris l’ancre).
 
     .EXAMPLE
     .\Better-CMD.ps1
 
     .EXAMPLE
+    .\Better-CMD.ps1 -Force
+
+    .EXAMPLE
     .\Better-CMD.ps1 -Uninstall
+
+    .EXAMPLE
+    .\Better-CMD.ps1 -Uninstall -Purge
 #>
 
 [CmdletBinding()]
 param(
-    [switch]$Uninstall
+    [switch]$Uninstall,
+    [switch]$Force,
+    [switch]$Purge
 )
 
 # Affichage UTF-8 (accents français dans la console)
@@ -36,11 +50,89 @@ if (-not $ProjectRoot) {
 }
 
 $BackupRoot = Join-Path $env:USERPROFILE '.better-cmd-backups'
+$AnchorSettingsFileName = 'settings-before-first-better-cmd.json'
 $FastfetchMarker = '# Auto-start Fastfetch (Better CMD)'
 $BetterCmdProfileMarker = '# Better CMD — profil PowerShell'
 $PowerShellProfileRelativeDir = 'WindowsPowerShell'
+$BetterCmdUserDir = Join-Path $env:USERPROFILE '.better-cmd'
+$BetterCmdManagedMarker = '.better-cmd-managed'
+$BetterCmdCmdProfileGuid = '{0caa0dad-35be-5f56-a8ff-afceeeaa6101}'
 
-function Get-BetterCmdDocumentsPowerShellProfilePath {
+function Get-BetterCmdSHA256File {
+    param([string]$Path)
+    if (-not (Test-Path -LiteralPath $Path)) {
+        return $null
+    }
+    (Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash
+}
+
+function Get-BetterCmdFastfetchSourceFingerprint {
+    param([string]$FastfetchSourceDir)
+    if (-not (Test-Path -LiteralPath $FastfetchSourceDir)) {
+        return $null
+    }
+    $sb = [System.Text.StringBuilder]::new()
+    Get-ChildItem -Path $FastfetchSourceDir -File -ErrorAction SilentlyContinue | Sort-Object Name | ForEach-Object {
+        [void]$sb.Append($_.Name)
+        [void]$sb.Append((Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash)
+    }
+    $bytes = [System.Text.Encoding]::UTF8.GetBytes($sb.ToString())
+    [System.BitConverter]::ToString([System.Security.Cryptography.SHA256]::Create().ComputeHash($bytes)).Replace('-', '')
+}
+
+function Get-BetterCmdInstallStatePath {
+    Join-Path $BetterCmdUserDir 'install-state.json'
+}
+
+function Read-BetterCmdInstallState {
+    $p = Get-BetterCmdInstallStatePath
+    if (-not (Test-Path -LiteralPath $p)) {
+        return $null
+    }
+    try {
+        Get-Content -LiteralPath $p -Raw -Encoding UTF8 | ConvertFrom-Json
+    } catch {
+        $null
+    }
+}
+
+function Write-BetterCmdInstallState {
+    param(
+        [string]$SettingsJsonHash,
+        [string]$ProfilePs1Hash,
+        [string]$CmdInitHash,
+        [string]$FastfetchHash
+    )
+    if (-not (Test-Path -LiteralPath $BetterCmdUserDir)) {
+        New-Item -Path $BetterCmdUserDir -ItemType Directory -Force | Out-Null
+    }
+    $obj = [ordered]@{
+        SchemaVersion  = 1
+        Updated        = (Get-Date).ToString('o')
+        SettingsJson   = $SettingsJsonHash
+        ProfilePs1     = $ProfilePs1Hash
+        CmdInit        = $CmdInitHash
+        Fastfetch      = $FastfetchHash
+    }
+    ($obj | ConvertTo-Json) | Set-Content -LiteralPath (Get-BetterCmdInstallStatePath) -Encoding UTF8
+}
+
+function Get-BetterCmdWindowsPowerShellProfileTargetPath {
+    <#
+        Chemin du profil AllHosts pour Windows PowerShell 5.1 (Élévation « Windows PowerShell » dans Windows Terminal).
+        Sous PowerShell 7+, $PROFILE.CurrentUserAllHosts pointe vers Documents\PowerShell\ — on force alors Documents\WindowsPowerShell\.
+    #>
+    $viaProfile = $null
+    if ($null -ne $PROFILE) {
+        try {
+            $viaProfile = $PROFILE.CurrentUserAllHosts
+        } catch {
+            $viaProfile = $null
+        }
+    }
+    if ($viaProfile -and ($viaProfile -match '\\WindowsPowerShell\\')) {
+        return $viaProfile
+    }
     $documents = [Environment]::GetFolderPath('MyDocuments')
     return Join-Path (Join-Path $documents $PowerShellProfileRelativeDir) 'profile.ps1'
 }
@@ -57,12 +149,8 @@ function Deploy-BetterCmdPowerShellProfile {
         return
     }
 
-    $targetProfile = Get-BetterCmdDocumentsPowerShellProfilePath
+    $targetProfile = Get-BetterCmdWindowsPowerShellProfileTargetPath
     $targetDir = Split-Path -Parent $targetProfile
-
-    if (-not (Test-Path -LiteralPath $targetDir)) {
-        New-Item -Path $targetDir -ItemType Directory -Force | Out-Null
-    }
 
     $firstTimeBackup = Join-Path $BackupRootPath 'PowerShell-profile-before-better-cmd.ps1'
     if (-not (Test-Path -LiteralPath $firstTimeBackup) -and (Test-Path -LiteralPath $targetProfile)) {
@@ -70,8 +158,27 @@ function Deploy-BetterCmdPowerShellProfile {
         Write-Ok "Ancien profil PowerShell sauvegardé ($firstTimeBackup)."
     }
 
+    # Même logique que la doc Microsoft : dossier + fichier profile « AllHosts », puis copie du contenu.
+    New-Item -Path $targetDir -ItemType Directory -Force | Out-Null
+    New-Item -Path $targetProfile -ItemType File -Force | Out-Null
     Copy-Item -LiteralPath $sourceProfile -Destination $targetProfile -Force
+
+    # Fichier téléchargé / marqué « provenant d’Internet » : RemoteSigned le bloque sans ça.
+    Unblock-File -LiteralPath $targetProfile -ErrorAction SilentlyContinue
+
     Write-Ok "Profil PowerShell déployé : $targetProfile"
+
+    try {
+        Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope CurrentUser -Force -ErrorAction Stop
+    } catch {
+        # Déjà tenté au début ; ignorer si stratégie groupe / Machine plus stricte
+    }
+
+    if ((Get-ExecutionPolicy) -eq 'AllSigned') {
+        Write-Warn "La stratégie d'exécution effective est AllSigned : les scripts non signés (dont le profil) ne peuvent pas s'exécuter."
+        Write-Warn "Si possible : Set-ExecutionPolicy -Scope CurrentUser -ExecutionPolicy RemoteSigned -Force"
+        Write-Warn "En entreprise, si une stratégie de groupe impose AllSigned, seul un admin peut ajuster ou le profil doit être signé."
+    }
 }
 
 function Write-Step {
@@ -96,8 +203,15 @@ function Write-Utf8NoBom {
 }
 
 function Get-WindowsTerminalLocalState {
-    $packages = Get-ChildItem -Path (Join-Path $env:LOCALAPPDATA 'Packages') -Filter 'Microsoft.WindowsTerminal_*' -Directory -ErrorAction SilentlyContinue
-    if (-not $packages) {
+    # Plusieurs paquets possibles (Terminal / Terminal Preview). On préfère la build stable.
+    $packages = @(
+        Get-ChildItem -Path (Join-Path $env:LOCALAPPDATA 'Packages') -Filter 'Microsoft.WindowsTerminal*' -Directory -ErrorAction SilentlyContinue |
+            Sort-Object {
+                if ($_.Name -like '*Preview*') { 1 } else { 0 }
+            },
+            Name
+    )
+    if ($packages.Count -eq 0) {
         return $null
     }
     return Join-Path $packages[0].FullName 'LocalState'
@@ -349,6 +463,82 @@ function Install-UserFonts {
     return $true
 }
 
+function Deploy-BetterCmdCmdInit {
+    $destDir = Join-Path $env:USERPROFILE '.better-cmd'
+    if (-not (Test-Path -LiteralPath $destDir)) {
+        New-Item -Path $destDir -ItemType Directory -Force | Out-Null
+    }
+
+    $dest = Join-Path $destDir 'cmd-init.cmd'
+    Update-ShellPath
+    $ff = Get-Command fastfetch -ErrorAction SilentlyContinue
+
+    # cmd.exe voit souvent un PATH plus petit que PowerShell — chemin complet vers fastfetch quand on le trouve.
+    $batch = @()
+    $batch += '@echo off'
+    $batch += 'setlocal'
+    $batch += 'REM Genere par Better-CMD.ps1'
+    $batch += 'chcp 65001 >nul'
+    $batch += 'set "FFCFG=%USERPROFILE%\.config\fastfetch\config.jsonc"'
+    if ($ff -and (Test-Path -LiteralPath $ff.Source)) {
+        $exe = $ff.Source.Replace('"', '""')
+        $batch += 'if exist "%FFCFG%" ('
+        $batch += "  `"$exe`" -c `"%FFCFG%`""
+        $batch += ') else ('
+        $batch += "  `"$exe`""
+        $batch += ')'
+    } else {
+        $batch += 'where fastfetch >nul 2>&1'
+        $batch += 'if errorlevel 1 ('
+        $batch += '  echo [Better CMD] fastfetch introuvable. Lance Better-CMD.bat ou installe-le avec winget.'
+        $batch += '  goto :eof'
+        $batch += ')'
+        $batch += 'if exist "%FFCFG%" ('
+        $batch += '  fastfetch -c "%FFCFG%"'
+        $batch += ') else ('
+        $batch += '  fastfetch'
+        $batch += ')'
+    }
+    $batch += 'endlocal'
+    Write-Utf8NoBom -Path $dest -Content (($batch -join "`r`n") + "`r`n")
+    Write-Ok "Démarrage CMD (fastfetch) déployé : $dest"
+}
+
+function Update-WindowsTerminalCmdProfileAbsoluteInit {
+    param([string]$DestDir)
+
+    if (-not $DestDir) {
+        return
+    }
+    $settingsPath = Join-Path $DestDir 'settings.json'
+    $cmdInit = Join-Path $env:USERPROFILE '.better-cmd\cmd-init.cmd'
+    if (-not (Test-Path -LiteralPath $settingsPath)) {
+        return
+    }
+    if (-not (Test-Path -LiteralPath $cmdInit)) {
+        Write-Warn 'cmd-init.cmd absent : profil CMD du Terminal non mis à jour.'
+        return
+    }
+
+    $cmdExe = (Join-Path $env:SystemRoot 'System32\cmd.exe').TrimEnd('\')
+    $newCommandLine = "$cmdExe /k `"$cmdInit`""
+    $escaped = $newCommandLine.Replace('\', '\\').Replace('"', '\"')
+
+    try {
+        $raw = Get-Content -LiteralPath $settingsPath -Raw -Encoding UTF8
+        $pattern = '("commandline"\s*:\s*")((?:\\.|[^"\\])*)("\s*,\s*\r?\n\s*"guid"\s*:\s*"\{0caa0dad-35be-5f56-a8ff-afceeeaa6101\}")'
+        if ($raw -notmatch $pattern) {
+            Write-Warn 'Ligne commandline du profil CMD (GUID Better CMD) introuvable dans settings.json.'
+            return
+        }
+        $newRaw = [regex]::Replace($raw, $pattern, { param($match) $match.Groups[1].Value + $escaped + $match.Groups[3].Value }, 1)
+        Write-Utf8NoBom -Path $settingsPath -Content $newRaw
+        Write-Ok 'Windows Terminal : ligne de commande CMD = chemin absolu vers cmd-init.'
+    } catch {
+        Write-Warn "Impossible de modifier settings.json pour le profil CMD : $($_.Exception.Message)"
+    }
+}
+
 function Deploy-Fastfetch {
     param(
         [string]$SourceDir,
@@ -374,6 +564,8 @@ function Deploy-Fastfetch {
         Write-Utf8NoBom -Path $configPath -Content $content
     }
 
+    Set-Content -LiteralPath (Join-Path $DestDir $BetterCmdManagedMarker) -Value 'managed-by-better-cmd' -Encoding UTF8
+
     Write-Ok "Fastfetch déployé vers $DestDir"
 }
 
@@ -398,6 +590,23 @@ function Deploy-WindowsTerminal {
         New-Item -Path $DestDir -ItemType Directory -Force | Out-Null
     }
 
+    $anchorPath = Join-Path $BackupRootPath $AnchorSettingsFileName
+    $sourceSettingsForCompare = Join-Path $SourceDir 'settings.json'
+    $settingsTarget = Join-Path $DestDir 'settings.json'
+    $projectHash = Get-BetterCmdSHA256File $sourceSettingsForCompare
+    $targetHashBefore = Get-BetterCmdSHA256File $settingsTarget
+
+    if (-not (Test-Path -LiteralPath $anchorPath)) {
+        if (Test-Path -LiteralPath $settingsTarget) {
+            if ($targetHashBefore -and $projectHash -and ($targetHashBefore -ne $projectHash)) {
+                Copy-Item -LiteralPath $settingsTarget -Destination $anchorPath -Force
+                Write-Ok "État Windows Terminal avant Better CMD enregistré (désinstall) : $anchorPath"
+            } else {
+                Write-Host "    Ancre WT : ignorée (déjà identique au projet Better CMD ou fichier absent) — la désinstall réinitialisera le Terminal par défaut si besoin." -ForegroundColor DarkGray
+            }
+        }
+    }
+
     $timestamp = Get-Date -Format 'yyyyMMdd-HHmmss'
     $backupDir = Join-Path $BackupRootPath "WindowsTerminal-$timestamp"
     New-Item -Path $backupDir -ItemType Directory -Force | Out-Null
@@ -412,49 +621,78 @@ function Deploy-WindowsTerminal {
     }
 }
 
-function Get-LatestWindowsTerminalBackup {
-    param([string]$BackupRootPath)
-
-    if (-not (Test-Path $BackupRootPath)) {
-        return $null
-    }
-
-    $latest = Get-ChildItem -Path $BackupRootPath -Directory -Filter 'WindowsTerminal-*' -ErrorAction SilentlyContinue |
-        Sort-Object Name -Descending |
-        Select-Object -First 1
-
-    if (-not $latest) {
-        return $null
-    }
-    return $latest.FullName
-}
-
-function Restore-WindowsTerminal {
+function Restore-WindowsTerminalFromBetterCmd {
     param(
         [string]$DestDir,
         [string]$BackupRootPath
     )
 
     if (-not $DestDir) {
-        Write-Warn "Windows Terminal introuvable. Restauration ignorée."
+        Write-Warn 'Windows Terminal introuvable. Restauration ignorée.'
         return $false
     }
 
-    $backupDir = Get-LatestWindowsTerminalBackup -BackupRootPath $BackupRootPath
-    if (-not $backupDir) {
-        Write-Warn "Aucune sauvegarde dans $BackupRootPath"
-        return $false
+    $targetSettings = Join-Path $DestDir 'settings.json'
+    $anchorPath = Join-Path $BackupRootPath $AnchorSettingsFileName
+
+    if (Test-Path -LiteralPath $anchorPath) {
+        Copy-Item -LiteralPath $anchorPath -Destination $targetSettings -Force
+        Write-Ok "Windows Terminal : settings.json restauré depuis votre config d'avant la première exécution Better CMD."
+        return $true
     }
 
-    $settingsBackup = Join-Path $backupDir 'settings.json'
-    if (-not (Test-Path $settingsBackup)) {
-        Write-Warn "settings.json absent dans $backupDir"
-        return $false
+    Write-Warn "Aucune sauvegarde initiale ($AnchorSettingsFileName). Les sauvegardes datées peuvent déjà être la version personnalisée — réinitialisation des paramètres du Terminal."
+    if (Test-Path -LiteralPath $targetSettings) {
+        Remove-Item -LiteralPath $targetSettings -Force
+        Write-Ok 'settings.json supprimé : Windows Terminal recréera les réglages par défaut au prochain démarrage.'
+        return $true
     }
 
-    Copy-Item -Path $settingsBackup -Destination (Join-Path $DestDir 'settings.json') -Force
-    Write-Ok "settings.json restauré depuis $backupDir"
-    return $true
+    Write-Warn 'Aucun settings.json à supprimer.'
+    return $false
+}
+
+function Remove-BetterCmdManagedFastfetchConfig {
+    $ffRoot = Join-Path $env:USERPROFILE '.config\fastfetch'
+    $marker = Join-Path $ffRoot $BetterCmdManagedMarker
+    if (-not (Test-Path -LiteralPath $marker)) {
+        Write-Warn "Dossier fastfetch sans marqueur Better CMD — rien n'a été supprimé (évite d'effacer une config personnelle)."
+        return
+    }
+    if (Test-Path -LiteralPath $ffRoot) {
+        Remove-Item -LiteralPath $ffRoot -Recurse -Force -ErrorAction SilentlyContinue
+        Write-Ok "Configuration utilisateur fastfetch supprimée ($ffRoot)."
+    }
+}
+
+function Remove-BetterCmdUserInstallFolder {
+    if (Test-Path -LiteralPath $BetterCmdUserDir) {
+        Remove-Item -LiteralPath $BetterCmdUserDir -Recurse -Force -ErrorAction SilentlyContinue
+        Write-Ok "Dossier utilisateur .better-cmd supprimé (cmd-init, suivi d'installation)."
+    }
+}
+
+function Uninstall-FastfetchPackage {
+    if (-not (Get-WingetPath)) {
+        Write-Warn "winget indisponible : fastfetch n'a pas été désinstallé via le gestionnaire de paquets."
+        return
+    }
+    if (-not (Get-Command fastfetch -ErrorAction SilentlyContinue)) {
+        Write-Ok "Fastfetch n'est pas dans le PATH — considéré comme déjà absent."
+        return
+    }
+    Write-Step 'Désinstallation de Fastfetch (winget)...'
+    $exitCode = Invoke-Winget -ArgumentList @(
+        'uninstall',
+        '--id', 'Fastfetch-cli.Fastfetch',
+        '--exact',
+        '--accept-source-agreements'
+    )
+    if ($exitCode -eq 0 -or -not (Get-Command fastfetch -ErrorAction SilentlyContinue)) {
+        Write-Ok 'Paquet Fastfetch désinstallé (winget).'
+    } else {
+        Write-Warn "La désinstallation winget a renvoyé le code $exitCode. Tu peux essayer : winget uninstall Fastfetch-cli.Fastfetch"
+    }
 }
 
 function Remove-FastfetchFromProfile {
@@ -478,7 +716,7 @@ function Remove-FastfetchFromProfile {
 function Restore-BetterCmdPowerShellProfile {
     param([string]$BackupRootPath)
 
-    $docsProfile = Get-BetterCmdDocumentsPowerShellProfilePath
+    $docsProfile = Get-BetterCmdWindowsPowerShellProfileTargetPath
     $firstTimeBackup = Join-Path $BackupRootPath 'PowerShell-profile-before-better-cmd.ps1'
 
     if (Test-Path -LiteralPath $firstTimeBackup) {
@@ -563,51 +801,134 @@ function Invoke-BetterCmdInstall {
     Write-Step "Installation des polices depuis fonts/..."
     Install-UserFonts -SourceFolder $fontsSource | Out-Null
 
-    $fastfetchSource = Join-Path $ProjectRoot 'fastfetch'
-    $fastfetchDest = Join-Path $env:USERPROFILE '.config\fastfetch'
-    Write-Step "Déploiement de la configuration Fastfetch..."
-    Deploy-Fastfetch -SourceDir $fastfetchSource -DestDir $fastfetchDest
-
-    $localStateSource = Join-Path $ProjectRoot 'LocalState'
-    $wtLocalState = Get-WindowsTerminalLocalState
-    if (-not (Test-Path $BackupRoot)) {
+    if (-not (Test-Path -LiteralPath $BackupRoot)) {
         New-Item -Path $BackupRoot -ItemType Directory -Force | Out-Null
     }
 
-    Write-Step "Déploiement de Windows Terminal (LocalState)..."
-    Deploy-WindowsTerminal -SourceDir $localStateSource -DestDir $wtLocalState -BackupRootPath $BackupRoot
+    $srcSettings = Join-Path $ProjectRoot 'LocalState\settings.json'
+    $srcProfile = Join-Path (Join-Path $ProjectRoot $PowerShellProfileRelativeDir) 'profile.ps1'
+    $srcFastfetch = Join-Path $ProjectRoot 'fastfetch'
 
-    Write-Step "Configuration du profil PowerShell (Documents\\WindowsPowerShell)..."
-    Deploy-BetterCmdPowerShellProfile -ProjectRootPath $ProjectRoot -BackupRootPath $BackupRoot
+    Update-ShellPath
+    $hSettings = Get-BetterCmdSHA256File $srcSettings
+    $hProfile = Get-BetterCmdSHA256File $srcProfile
+    $ffForCmdInitState = Get-Command fastfetch -ErrorAction SilentlyContinue
+    $hCmdInit = if ($ffForCmdInitState -and (Test-Path -LiteralPath $ffForCmdInitState.Source)) {
+        (Get-FileHash -LiteralPath $ffForCmdInitState.Source -Algorithm SHA256).Hash
+    } else {
+        'fastfetch-absent'
+    }
+    $hFf = Get-BetterCmdFastfetchSourceFingerprint $srcFastfetch
+
+    $fastfetchDest = Join-Path $env:USERPROFILE '.config\fastfetch'
+    $wtLocalState = Get-WindowsTerminalLocalState
+    $deployedWtSettings = if ($wtLocalState) { Join-Path $wtLocalState 'settings.json' } else { $null }
+    $profileTargetForCheck = Get-BetterCmdWindowsPowerShellProfileTargetPath
+    $cmdInitTargetForCheck = Join-Path $BetterCmdUserDir 'cmd-init.cmd'
+    $ffMarkerForCheck = Join-Path $fastfetchDest $BetterCmdManagedMarker
+
+    $state = if (-not $Force) { Read-BetterCmdInstallState } else { $null }
+
+    $needsWT = [bool]($Force -or (-not $state) -or ($state.SettingsJson -ne $hSettings) -or -not (Test-Path -LiteralPath $deployedWtSettings))
+    $needsProfile = [bool]($Force -or (-not $state) -or ($state.ProfilePs1 -ne $hProfile) -or (($null -ne $hProfile) -and ((Get-BetterCmdSHA256File $profileTargetForCheck) -ne $hProfile)))
+    $needsCmdInit = [bool]($Force -or (-not $state) -or ($state.CmdInit -ne $hCmdInit) -or -not (Test-Path -LiteralPath $cmdInitTargetForCheck))
+    $needsFF = [bool]($Force -or (-not $state) -or ($state.Fastfetch -ne $hFf) -or -not (Test-Path -LiteralPath $ffMarkerForCheck))
+
+    if (-not ($needsWT -or $needsProfile -or $needsCmdInit -or $needsFF)) {
+        Write-Ok "Contenu du dépôt déjà déployé (install-state.json). Utilise -Force pour tout ré-appliquer."
+    } else {
+        $parts = @()
+        if ($needsFF) { $parts += 'Fastfetch' }
+        if ($needsCmdInit) { $parts += 'CMD (cmd-init)' }
+        if ($needsWT) { $parts += 'Windows Terminal' }
+        if ($needsProfile) { $parts += 'Profil PowerShell' }
+        Write-Host "    Mise à jour : $($parts -join ', ')" -ForegroundColor DarkGray
+    }
+
+    if ($needsFF) {
+        Write-Step "Déploiement / mise à jour de la configuration Fastfetch..."
+        Deploy-Fastfetch -SourceDir $srcFastfetch -DestDir $fastfetchDest
+    } else {
+        Write-Ok "Config Fastfetch : inchangée côté projet (pas de recopie)."
+    }
+
+    if ($needsCmdInit) {
+        Write-Step "Déploiement / mise à jour du lanceur CMD (fastfetch)..."
+        Deploy-BetterCmdCmdInit
+    } else {
+        Write-Ok "cmd-init.cmd : inchangé (pas de recopie)."
+    }
+
+    if ($needsWT) {
+        Write-Step "Déploiement / mise à jour de Windows Terminal (LocalState)..."
+        $localStateSource = Join-Path $ProjectRoot 'LocalState'
+        Deploy-WindowsTerminal -SourceDir $localStateSource -DestDir $wtLocalState -BackupRootPath $BackupRoot
+    } else {
+        Write-Ok "settings.json du projet : inchangé — Terminal non modifié."
+    }
+
+    if ($needsProfile) {
+        Write-Step 'Configuration du profil PowerShell (Windows PowerShell 5.1, CurrentUserAllHosts)...'
+        Deploy-BetterCmdPowerShellProfile -ProjectRootPath $ProjectRoot -BackupRootPath $BackupRoot
+    } else {
+        Write-Ok "Profil PowerShell : inchangé (pas de recopie)."
+    }
+
+    if ($wtLocalState) {
+        Write-Step 'Profil CMD Windows Terminal : chemin absolu vers cmd-init.cmd (requis pour fastfetch)...'
+        Update-WindowsTerminalCmdProfileAbsoluteInit -DestDir $wtLocalState
+    }
+
+    Write-BetterCmdInstallState -SettingsJsonHash $hSettings -ProfilePs1Hash $hProfile -CmdInitHash $hCmdInit -FastfetchHash $hFf
 
     Write-Step "Relance de Windows Terminal..."
     Restart-WindowsTerminalApp | Out-Null
 
     Write-Host "`n[+] Installation terminée !" -ForegroundColor Green
-    Write-Host "    Sauvegardes WT : $BackupRoot" -ForegroundColor Gray
-    Write-Host "    Désinstallation : .\Better-CMD.ps1 -Uninstall`n" -ForegroundColor Gray
+    Write-Host "    Ancre de restauration WT : $(Join-Path $BackupRoot $AnchorSettingsFileName)" -ForegroundColor Gray
+    Write-Host "    Suivi des versions : $(Get-BetterCmdInstallStatePath)" -ForegroundColor Gray
+    Write-Host "    Réinstallation forcée : .\Better-CMD.ps1 -Force" -ForegroundColor Gray
+    Write-Host "    Désinstallation : .\Better-CMD.ps1 -Uninstall   (tout supprimer y compris sauvegardes : ajouter -Purge)`n" -ForegroundColor Gray
 }
 
 function Invoke-BetterCmdUninstall {
-    Write-Host "`n=== Better CMD - Restauration / désinstallation ===`n" -ForegroundColor Magenta
+    Write-Host "`n=== Better CMD - Désinstallation complète ===`n" -ForegroundColor Magenta
 
     $wtLocalState = Get-WindowsTerminalLocalState
 
-    Write-Step "Restauration de Windows Terminal..."
-    $restored = Restore-WindowsTerminal -DestDir $wtLocalState -BackupRootPath $BackupRoot
+    Write-Step "Windows Terminal (restauration ou réinit par défaut)..."
+    $restored = Restore-WindowsTerminalFromBetterCmd -DestDir $wtLocalState -BackupRootPath $BackupRoot
 
-    Write-Step "Nettoyage du profil PowerShell..."
+    Write-Step "Profil PowerShell..."
     Restore-BetterCmdPowerShellProfile -BackupRootPath $BackupRoot
+
+    Write-Step "Suppression du dossier fastfetch utilisateur géré par Better CMD..."
+    Remove-BetterCmdManagedFastfetchConfig
+
+    Write-Step "Désinstallation du paquet Fastfetch (winget)..."
+    Uninstall-FastfetchPackage
+
+    Write-Step "Suppression du dossier utilisateur .better-cmd (lanceur CMD, suivi)..."
+    Remove-BetterCmdUserInstallFolder
+
+    if ($Purge -and (Test-Path -LiteralPath $BackupRoot)) {
+        Remove-Item -LiteralPath $BackupRoot -Recurse -Force
+        Write-Ok "Dossier de sauvegardes supprimé : $BackupRoot"
+    }
 
     Write-Step "Relance de Windows Terminal..."
     Restart-WindowsTerminalApp | Out-Null
 
-    Write-Host "`n[+] Restauration terminée." -ForegroundColor Green
+    Write-Host "`n[+] Désinstallation Better CMD terminée." -ForegroundColor Green
     if (-not $restored) {
-        Write-Warn "settings.json n'a pas été restauré (pas de sauvegarde)."
+        Write-Warn "Windows Terminal n'a pas pu être restauré depuis l'ancre (détail dans les messages ci-dessus)."
     }
-    Write-Host "    Les polices et Fastfetch restent installés sur le système." -ForegroundColor Gray
-    Write-Host "    Config fastfetch : $(Join-Path $env:USERPROFILE '.config\fastfetch')`n" -ForegroundColor Gray
+    Write-Host "    Les polices installées depuis fonts/ n'ont pas été désinstallées automatiquement." -ForegroundColor Gray
+    if (-not $Purge) {
+        Write-Host "    Sauvegardes conservées dans : $BackupRoot (supprimer avec : .\Better-CMD.ps1 -Uninstall -Purge)`n" -ForegroundColor Gray
+    } else {
+        Write-Host "    Sauvegardes : supprimées (-Purge).`n" -ForegroundColor Gray
+    }
 }
 
 if ($Uninstall) {
