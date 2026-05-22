@@ -70,7 +70,7 @@
                 "builtinGlyphs": true,
                 "cellHeight": "1.2",
                 "colorGlyphs": true,
-                "face": "JetBrainsMono Nerd Font Mono",
+                "face": "JetBrainsMono NFM",
                 "size": 10,
                 "weight": "extra-black"
             },
@@ -88,7 +88,7 @@
                 "name": "Windows PowerShell"
             },
             {
-                "commandline": "%SystemRoot%\\System32\\cmd.exe /k fastfetch",
+                "commandline": "%SystemRoot%\\System32\\cmd.exe /k call \"%USERPROFILE%\\.better-powershell-cmd\\cmd-init.cmd\"",
                 "guid": "{0caa0dad-35be-5f56-a8ff-afceeeaa6101}",
                 "hidden": false,
                 "name": "Command Prompt"
